@@ -87,6 +87,9 @@ pub unsafe extern "C" fn _start() -> ! {
         } else if cmd == b"mkdir" {
             if arg.is_empty() { print(b"usage: mkdir <dir>\r\n"); }
             else { do_mkdir(arg, &cwd[..cwd_len]); }
+        } else if cmd == b"touch" {
+            if arg.is_empty() { print(b"usage: touch <file>\r\n"); }
+            else { do_touch(arg, &cwd[..cwd_len]); }
         } else if cmd == b"rm" {
             if arg.is_empty() { print(b"usage: rm <file>\r\n"); }
             else { do_rm(arg, &cwd[..cwd_len]); }
@@ -108,6 +111,7 @@ pub unsafe extern "C" fn _start() -> ! {
             print(b"  cat <file>          print file to screen\r\n");
             print(b"  write <file> <text> write text to file (creates if needed)\r\n");
             print(b"  mkdir <dir>         create directory\r\n");
+            print(b"  touch <file>        create file if it does not exist\r\n");
             print(b"  rm <file>           remove file or empty directory\r\n");
             print(b"  mv <src> <dst>      move/rename a file or directory\r\n");
             print(b"  cp <src> <dst>      copy a file\r\n");
@@ -236,6 +240,16 @@ fn do_mkdir(path: &[u8], cwd: &[u8]) {
     } else {
         print(b"mkdir: failed (already exists?)\r\n");
     }
+}
+
+fn do_touch(path: &[u8], cwd: &[u8]) {
+    let mut rpath = [0u8; 128];
+    let rlen = resolve(cwd, path, &mut rpath);
+    let (rc, fd) = fs_open(&rpath[..rlen]);
+    if rc == OK { fs_close(fd); return; }
+    let (rc2, fd2) = fs_create(&rpath[..rlen]);
+    if rc2 != OK { print(b"touch: failed\r\n"); return; }
+    fs_close(fd2);
 }
 
 fn do_rm(path: &[u8], cwd: &[u8]) {
@@ -375,30 +389,62 @@ fn do_run(name: &[u8], linux: bool) {
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
 fn resolve(cwd: &[u8], path: &[u8], out: &mut [u8; 128]) -> usize {
+    // Build raw absolute path into a temp buffer, then normalize.
+    let mut raw = [0u8; 128];
+    let raw_len;
     if path.is_empty() {
         let n = cwd.len().min(128);
-        out[..n].copy_from_slice(&cwd[..n]);
-        return n;
-    }
-    if path[0] == b'/' {
+        raw[..n].copy_from_slice(&cwd[..n]);
+        raw_len = n;
+    } else if path[0] == b'/' {
         let n = path.len().min(128);
-        out[..n].copy_from_slice(&path[..n]);
-        return n;
-    }
-    // Relative: join cwd + "/" + path
-    if cwd.len() == 1 {
-        // cwd is "/"
-        out[0] = b'/';
+        raw[..n].copy_from_slice(&path[..n]);
+        raw_len = n;
+    } else if cwd.len() == 1 {
+        raw[0] = b'/';
         let n = path.len().min(127);
-        out[1..1 + n].copy_from_slice(&path[..n]);
-        return 1 + n;
+        raw[1..1 + n].copy_from_slice(&path[..n]);
+        raw_len = 1 + n;
+    } else {
+        let cn = cwd.len().min(126);
+        raw[..cn].copy_from_slice(&cwd[..cn]);
+        raw[cn] = b'/';
+        let n = path.len().min(127 - cn);
+        raw[cn + 1..cn + 1 + n].copy_from_slice(&path[..n]);
+        raw_len = cn + 1 + n;
     }
-    let cn = cwd.len().min(126);
-    out[..cn].copy_from_slice(&cwd[..cn]);
-    out[cn] = b'/';
-    let n = path.len().min(127 - cn);
-    out[cn + 1..cn + 1 + n].copy_from_slice(&path[..n]);
-    cn + 1 + n
+    path_normalize(&raw[..raw_len], out)
+}
+
+/// Resolve `.` and `..` components in an absolute path, writing the result
+/// into `out`.  Returns the length of the normalized path.
+fn path_normalize(input: &[u8], out: &mut [u8; 128]) -> usize {
+    out[0] = b'/';
+    let mut len = 1usize;
+    let mut depth = 0usize;
+    let mut seg = [0usize; 16]; // seg[i] = value of `len` before segment i
+
+    let src = if !input.is_empty() && input[0] == b'/' { &input[1..] } else { input };
+    let mut i = 0;
+    while i < src.len() {
+        while i < src.len() && src[i] == b'/' { i += 1; }
+        let s = i;
+        while i < src.len() && src[i] != b'/' { i += 1; }
+        let comp = &src[s..i];
+        if comp.is_empty() || comp == b"." {
+            // skip
+        } else if comp == b".." {
+            if depth > 0 { depth -= 1; len = seg[depth]; }
+        } else if depth < 16 {
+            seg[depth] = len;
+            depth += 1;
+            if len > 1 && len < 128 { out[len] = b'/'; len += 1; }
+            let cl = comp.len().min(128 - len);
+            out[len..len + cl].copy_from_slice(&comp[..cl]);
+            len += cl;
+        }
+    }
+    len
 }
 
 // ── Syscall wrappers ──────────────────────────────────────────────────────────
