@@ -1,7 +1,8 @@
 //! Ferrite OS interactive shell.
 //!
 //! Supports: ls [path], cat <file>, write <file> <text>, mkdir <dir>,
-//!           cd [path], pwd, stat <path>, help, exit
+//!           cd [path], pwd, stat <path>, rm <file>, mv <src> <dst>,
+//!           cp <src> <dst>, help, exit
 //!
 //! Uses Ferrite FS syscalls (200–208) and CONSOLE_GETCHAR (10_001).
 //! Characters are echoed by the kernel console as they are typed;
@@ -22,6 +23,8 @@ const FS_MKDIR:         usize = 204;
 const FS_READDIR:       usize = 205;
 const FS_STAT:          usize = 206;
 const FS_CREATE:        usize = 208;
+const FS_UNLINK:        usize = 209;
+const FS_RENAME:        usize = 210;
 const CNODE_DELETE:     usize = 13;
 const PROC_SPAWN:       usize = 300;
 const PROC_WAIT:        usize = 301;
@@ -84,6 +87,13 @@ pub unsafe extern "C" fn _start() -> ! {
         } else if cmd == b"mkdir" {
             if arg.is_empty() { print(b"usage: mkdir <dir>\r\n"); }
             else { do_mkdir(arg, &cwd[..cwd_len]); }
+        } else if cmd == b"rm" {
+            if arg.is_empty() { print(b"usage: rm <file>\r\n"); }
+            else { do_rm(arg, &cwd[..cwd_len]); }
+        } else if cmd == b"mv" {
+            do_mv_or_cp(arg, &cwd[..cwd_len], false);
+        } else if cmd == b"cp" {
+            do_mv_or_cp(arg, &cwd[..cwd_len], true);
         } else if cmd == b"cd" {
             do_cd(if arg.is_empty() { b"/" } else { arg }, &mut cwd, &mut cwd_len);
         } else if cmd == b"pwd" {
@@ -98,6 +108,9 @@ pub unsafe extern "C" fn _start() -> ! {
             print(b"  cat <file>          print file to screen\r\n");
             print(b"  write <file> <text> write text to file (creates if needed)\r\n");
             print(b"  mkdir <dir>         create directory\r\n");
+            print(b"  rm <file>           remove file or empty directory\r\n");
+            print(b"  mv <src> <dst>      move/rename a file or directory\r\n");
+            print(b"  cp <src> <dst>      copy a file\r\n");
             print(b"  cd [path]           change directory (default /)\r\n");
             print(b"  pwd                 print working directory\r\n");
             print(b"  stat <path>         show type and size\r\n");
@@ -222,6 +235,73 @@ fn do_mkdir(path: &[u8], cwd: &[u8]) {
         print(b"\r\n");
     } else {
         print(b"mkdir: failed (already exists?)\r\n");
+    }
+}
+
+fn do_rm(path: &[u8], cwd: &[u8]) {
+    let mut rpath = [0u8; 128];
+    let rlen = resolve(cwd, path, &mut rpath);
+    let rc = fs_unlink(&rpath[..rlen]);
+    if rc != OK {
+        print(b"rm: ");
+        print_bytes(path);
+        if rc == 2 { print(b": not empty\r\n"); }
+        else       { print(b": failed\r\n"); }
+    }
+}
+
+/// Shared impl for `mv` (copy=false) and `cp` (copy=true).
+fn do_mv_or_cp(args: &[u8], cwd: &[u8], copy: bool) {
+    // Split into two tokens.
+    let mut i = 0;
+    while i < args.len() && args[i] != b' ' { i += 1; }
+    if i == 0 || i >= args.len() {
+        if copy { print(b"usage: cp <src> <dst>\r\n"); }
+        else    { print(b"usage: mv <src> <dst>\r\n"); }
+        return;
+    }
+    let src_arg = &args[..i];
+    while i < args.len() && args[i] == b' ' { i += 1; }
+    let dst_arg = &args[i..];
+    if dst_arg.is_empty() {
+        if copy { print(b"usage: cp <src> <dst>\r\n"); }
+        else    { print(b"usage: mv <src> <dst>\r\n"); }
+        return;
+    }
+
+    let mut src = [0u8; 128];
+    let mut dst = [0u8; 128];
+    let slen = resolve(cwd, src_arg, &mut src);
+    let dlen = resolve(cwd, dst_arg, &mut dst);
+
+    if copy {
+        // Open source, create dest, copy data.
+        let (rc, src_fd) = fs_open(&src[..slen]);
+        if rc != OK {
+            print(b"cp: ");
+            print_bytes(src_arg);
+            print(b": no such file\r\n");
+            return;
+        }
+        let (rc2, dst_fd) = fs_create(&dst[..dlen]);
+        if rc2 != OK {
+            print(b"cp: cannot create destination\r\n");
+            fs_close(src_fd);
+            return;
+        }
+        let mut buf = [0u8; 256];
+        loop {
+            let (_, n) = fs_read(src_fd, &mut buf);
+            if n == 0 { break; }
+            fs_write(dst_fd, &buf[..n]);
+        }
+        fs_close(src_fd);
+        fs_close(dst_fd);
+    } else {
+        let rc = fs_rename(&src[..slen], &dst[..dlen]);
+        if rc != OK {
+            print(b"mv: failed\r\n");
+        }
     }
 }
 
@@ -430,6 +510,18 @@ fn fs_create(path: &[u8]) -> (usize, usize) {
     (a0, a1)
 }
 
+fn fs_unlink(path: &[u8]) -> usize {
+    let (a0, _, _, _) = e4(0, FS_UNLINK, path.as_ptr() as usize, path.len());
+    a0
+}
+
+fn fs_rename(old: &[u8], new: &[u8]) -> usize {
+    let (a0, _, _, _) = e6(0, FS_RENAME,
+        old.as_ptr() as usize, old.len(),
+        new.as_ptr() as usize, new.len());
+    a0
+}
+
 fn e4(a0: usize, a1: usize, a2: usize, a3: usize) -> (usize, usize, usize, usize) {
     let (r0, r1, r2, r3);
     unsafe {
@@ -437,6 +529,19 @@ fn e4(a0: usize, a1: usize, a2: usize, a3: usize) -> (usize, usize, usize, usize
             inlateout("a0") a0 => r0, inlateout("a1") a1 => r1,
             inlateout("a2") a2 => r2, inlateout("a3") a3 => r3,
             lateout("a4") _, lateout("a5") _, lateout("a6") _, lateout("a7") _,
+            options(nostack));
+    }
+    (r0, r1, r2, r3)
+}
+
+fn e6(a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> (usize, usize, usize, usize) {
+    let (r0, r1, r2, r3);
+    unsafe {
+        asm!("ecall",
+            inlateout("a0") a0 => r0, inlateout("a1") a1 => r1,
+            inlateout("a2") a2 => r2, inlateout("a3") a3 => r3,
+            inlateout("a4") a4 => _, inlateout("a5") a5 => _,
+            lateout("a6") _, lateout("a7") _,
             options(nostack));
     }
     (r0, r1, r2, r3)

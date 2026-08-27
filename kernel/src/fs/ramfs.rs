@@ -82,6 +82,7 @@ pub enum FsError {
     BadDescriptor   = 9,
     TooManyOpen     = 10,
     InvalidPath     = 11,
+    NotEmpty        = 12,
 }
 
 // ── Root inode ────────────────────────────────────────────────────────────────
@@ -234,6 +235,82 @@ pub fn fs_create(path: &[u8]) -> Result<usize, FsError> {
 
 pub fn fs_open(path: &[u8]) -> Option<usize> {
     lookup_path(path)
+}
+
+/// Remove a file or empty directory entry from its parent directory.
+pub fn fs_unlink(path: &[u8]) -> Result<(), FsError> {
+    let (parent_pa, name) = resolve_parent(path)?;
+    let parent = unsafe { &mut *(parent_pa as *mut Inode) };
+    if parent.kind != InodeKind::Dir { return Err(FsError::NotADirectory); }
+    if parent.data_pa == 0 { return Err(FsError::NotFound); }
+
+    for e in entries_slice_mut(parent.data_pa) {
+        if e.inode_pa != 0 && name_eq(&e.name, name) {
+            let child = unsafe { &*(e.inode_pa as *const Inode) };
+            if child.kind == InodeKind::Dir && child.size > 0 {
+                return Err(FsError::NotEmpty);
+            }
+            e.inode_pa = 0;
+            e.name = [0u8; MAX_NAME];
+            parent.size -= 1;
+            return Ok(());
+        }
+    }
+    Err(FsError::NotFound)
+}
+
+/// Rename (move) a path to a new location.  Both paths must share the same
+/// filesystem root.  Overwrites an existing file at `new_path` if it is a
+/// file; refuses if it is a non-empty directory.
+pub fn fs_rename(old_path: &[u8], new_path: &[u8]) -> Result<(), FsError> {
+    let (old_dir_pa, old_name) = resolve_parent(old_path)?;
+    let (new_dir_pa, new_name) = resolve_parent(new_path)?;
+    if new_name.len() > MAX_NAME { return Err(FsError::NameTooLong); }
+
+    // Locate the source entry.
+    let (src_pa, src_kind) = {
+        let old_dir = unsafe { &*(old_dir_pa as *const Inode) };
+        if old_dir.data_pa == 0 { return Err(FsError::NotFound); }
+        let e = entries_slice(old_dir.data_pa).iter()
+            .find(|e| e.inode_pa != 0 && name_eq(&e.name, old_name))
+            .ok_or(FsError::NotFound)?;
+        (e.inode_pa, InodeKind::from_u8(e.kind).ok_or(FsError::NotFound)?)
+    };
+
+    // If a destination entry already exists, remove it (file only; reject non-empty dir).
+    {
+        let new_dir = unsafe { &*(new_dir_pa as *const Inode) };
+        if new_dir.data_pa != 0 {
+            for e in entries_slice_mut(new_dir.data_pa) {
+                if e.inode_pa != 0 && name_eq(&e.name, new_name) {
+                    let dst = unsafe { &*(e.inode_pa as *const Inode) };
+                    if dst.kind == InodeKind::Dir && dst.size > 0 {
+                        return Err(FsError::NotEmpty);
+                    }
+                    e.inode_pa = 0;
+                    e.name = [0u8; MAX_NAME];
+                    unsafe { (*(new_dir_pa as *mut Inode)).size -= 1; }
+                    break;
+                }
+            }
+        }
+    }
+
+    // Remove source entry.
+    {
+        let old_dir = unsafe { &mut *(old_dir_pa as *mut Inode) };
+        for e in entries_slice_mut(old_dir.data_pa) {
+            if e.inode_pa != 0 && name_eq(&e.name, old_name) {
+                e.inode_pa = 0;
+                e.name = [0u8; MAX_NAME];
+                old_dir.size -= 1;
+                break;
+            }
+        }
+    }
+
+    // Insert at new location.
+    insert_entry(new_dir_pa, new_name, src_kind, src_pa)
 }
 
 pub fn fs_read(inode_pa: usize, offset: usize, dst: &mut [u8]) -> usize {

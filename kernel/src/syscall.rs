@@ -60,6 +60,8 @@ pub mod label {
     pub const FS_READDIR: usize = 205; // a2=fd a3=buf_va a4=buf_len → a1=name_len (0=end)
     pub const FS_STAT:    usize = 206; // a2=path_va a3=path_len → a1=kind a2=size
     pub const FS_CREATE:  usize = 208; // a2=path_va a3=path_len → a1=fd (create+open)
+    pub const FS_UNLINK:  usize = 209; // a2=path_va a3=path_len
+    pub const FS_RENAME:  usize = 210; // a2=old_va a3=old_len a4=new_va a5=new_len
     // Process lifecycle (Phase 17) — no cap slot required for SPAWN
     pub const PROC_SPAWN:       usize = 300; // a2=name_va a3=name_len a4=dest_slot → Thread cap at dest_slot
     pub const PROC_WAIT:        usize = 301; // a0=thread_cap_slot → a0=OK a1=exit_code (blocks until child exits)
@@ -99,7 +101,7 @@ pub fn dispatch(frame: &mut TrapFrame) {
     }
 
     // ── Filesystem syscalls (Phase 16) ────────────────────────────────────────
-    if a1 >= 200 && a1 <= 208 {
+    if a1 >= 200 && a1 <= 210 {
         dispatch_fs(frame, a1, a2, a3, a4, a5);
         return;
     }
@@ -311,7 +313,7 @@ pub fn dispatch(frame: &mut TrapFrame) {
 
 // ── Filesystem dispatch (Phase 16) ────────────────────────────────────────────
 
-fn dispatch_fs(frame: &mut TrapFrame, label: usize, a2: usize, a3: usize, a4: usize, _a5: usize) {
+fn dispatch_fs(frame: &mut TrapFrame, label: usize, a2: usize, a3: usize, a4: usize, a5: usize) {
     use crate::fs::ramfs;
     use crate::arch::riscv64::vspace;
 
@@ -421,6 +423,23 @@ fn dispatch_fs(frame: &mut TrapFrame, label: usize, a2: usize, a3: usize, a4: us
             let tbl = match get_fd_table() { Some(t) => t, None => { frame.set_reply(err(error::NOT_ENOUGH_MEMORY)); return; } };
             let fd = match ramfs::fd_alloc(tbl, inode_pa, 0) { Some(f) => f, None => { frame.set_reply(err(error::ILLEGAL_OPERATION)); return; } };
             let mut r = err(error::OK); r[1] = fd; frame.set_reply(r);
+        }
+        // FS_UNLINK: a2=path_va, a3=path_len
+        label::FS_UNLINK => {
+            let path = match user_slice(a2, a3) { Some(p) => p, None => { frame.set_reply(err(error::FAILED_LOOKUP)); return; } };
+            match ramfs::fs_unlink(path) {
+                Ok(())  => { frame.set_reply(err(error::OK)); }
+                Err(e)  => { frame.set_reply(err(fs_err(e))); }
+            }
+        }
+        // FS_RENAME: a2=old_va, a3=old_len, a4=new_va, a5=new_len
+        label::FS_RENAME => {
+            let old_path = match user_slice(a2, a3) { Some(p) => p, None => { frame.set_reply(err(error::FAILED_LOOKUP)); return; } };
+            let new_path = match user_slice(a4, a5) { Some(p) => p, None => { frame.set_reply(err(error::FAILED_LOOKUP)); return; } };
+            match ramfs::fs_rename(old_path, new_path) {
+                Ok(())  => { frame.set_reply(err(error::OK)); }
+                Err(e)  => { frame.set_reply(err(fs_err(e))); }
+            }
         }
         _ => { frame.set_reply(err(error::ILLEGAL_OPERATION)); }
     }

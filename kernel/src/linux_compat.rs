@@ -35,7 +35,8 @@ const ENOENT:  isize = -2;
 const EFAULT:  isize = -14;
 const ECHILD:  isize = -10;
 const EEXIST:  isize = -17;
-const ENOTDIR: isize = -20;
+const ENOTDIR:   isize = -20;
+const ENOTEMPTY: isize = -39;
 const ERANGE:  isize = -34;
 
 // ── Linux RISC-V syscall numbers ──────────────────────────────────────────────
@@ -46,6 +47,7 @@ const SYS_FCNTL:           usize = 25;
 const SYS_IOCTL:           usize = 29;
 const SYS_MKDIRAT:         usize = 34;
 const SYS_UNLINKAT:        usize = 35;
+const SYS_RENAMEAT:        usize = 38;
 const SYS_FACCESSAT:       usize = 48;
 const SYS_CHDIR:           usize = 49;
 const SYS_OPENAT:          usize = 56;
@@ -243,7 +245,9 @@ pub fn dispatch(frame: &mut TrapFrame) {
         SYS_FACCESSAT => sys_faccessat(a0, a1),
         SYS_MKDIRAT  => sys_mkdirat(a0, a1),
         SYS_READLINKAT => EINVAL, // ramfs has no symlinks
-        SYS_UNLINKAT | SYS_PIPE2 => ENOSYS,
+        SYS_UNLINKAT => sys_unlinkat(a0, a1, a2),
+        SYS_RENAMEAT => sys_renameat(a0, a1, a2, a3),
+        SYS_PIPE2 => ENOSYS,
 
         // ── Phase A4: process lifecycle ───────────────────────────────────────
         SYS_CLONE    => sys_clone(a0, frame),
@@ -668,6 +672,37 @@ fn sys_mkdirat(dirfd: usize, path_va: usize) -> isize {
         Err(crate::fs::ramfs::FsError::Exists) => EEXIST,
         Err(crate::fs::ramfs::FsError::NotFound) => ENOENT,
         Err(_) => EINVAL,
+    }
+}
+
+fn sys_unlinkat(dirfd: usize, path_va: usize, _flags: usize) -> isize {
+    if dirfd as isize != AT_FDCWD { return ENOTDIR; }
+    let mut path = [0u8; MAX_PATH];
+    let len = match resolve_path(path_va, &mut path) {
+        Ok(l)  => l,
+        Err(e) => return e,
+    };
+    match crate::fs::ramfs::fs_unlink(&path[..len]) {
+        Ok(())                                      => 0,
+        Err(crate::fs::ramfs::FsError::NotFound)   => ENOENT,
+        Err(crate::fs::ramfs::FsError::NotEmpty)   => ENOTEMPTY,
+        Err(crate::fs::ramfs::FsError::NotAFile)   => ENOTDIR,
+        Err(_)                                      => EINVAL,
+    }
+}
+
+fn sys_renameat(old_dirfd: usize, old_va: usize, new_dirfd: usize, new_va: usize) -> isize {
+    if old_dirfd as isize != AT_FDCWD || new_dirfd as isize != AT_FDCWD { return ENOTDIR; }
+    let mut old_buf = [0u8; MAX_PATH];
+    let mut new_buf = [0u8; MAX_PATH];
+    let old_len = match resolve_path(old_va, &mut old_buf) { Ok(l) => l, Err(e) => return e };
+    let new_len = match resolve_path(new_va, &mut new_buf) { Ok(l) => l, Err(e) => return e };
+    match crate::fs::ramfs::fs_rename(&old_buf[..old_len], &new_buf[..new_len]) {
+        Ok(())                                      => 0,
+        Err(crate::fs::ramfs::FsError::NotFound)   => ENOENT,
+        Err(crate::fs::ramfs::FsError::NotEmpty)   => ENOTEMPTY,
+        Err(crate::fs::ramfs::FsError::Exists)     => EEXIST,
+        Err(_)                                      => EINVAL,
     }
 }
 
