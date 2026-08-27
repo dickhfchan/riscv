@@ -1,0 +1,11 @@
+[package]
+name = "ferrite-kernel"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ferrite-kernel"
+path = "src/main.rs"
+
+[dependencies]
+fdt = "0.1"

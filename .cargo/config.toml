@@ -1,0 +1,19 @@
+[build]
+target = "riscv64gc-unknown-none-elf"
+
+[target.riscv64gc-unknown-none-elf]
+rustflags = [
+    # Enable bit-manipulation extensions (Zba/Zbb/Zbs) from RVA23
+    "-C", "target-feature=+zba,+zbb,+zbs",
+    # Static relocation — kernel lives at a fixed VA
+    "-C", "relocation-model=static",
+    "-C", "code-model=medium",
+]
+
+[profile.dev]
+# Keep frame pointers for backtraces
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"

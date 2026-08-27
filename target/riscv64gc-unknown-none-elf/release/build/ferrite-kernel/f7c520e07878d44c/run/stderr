@@ -1,0 +1,30 @@
+warning: constant `THREAD_EXIT` is never used
+  --> /Users/dickchan/projects/riscv/server/src/main.rs:18:7
+   |
+18 | const THREAD_EXIT:    usize = 30;
+   |       ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: 1 warning emitted
+
+warning: constant `THREAD_EXIT` is never used
+  --> /Users/dickchan/projects/riscv/client/src/main.rs:17:7
+   |
+17 | const THREAD_EXIT:   usize = 30;
+   |       ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: 1 warning emitted
+
+warning: constant `THREAD_EXIT` is never used
+  --> /Users/dickchan/projects/riscv/tty_test/src/main.rs:14:7
+   |
+14 | const THREAD_EXIT:     usize = 30;
+   |       ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: 1 warning emitted
+
