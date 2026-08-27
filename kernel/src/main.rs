@@ -963,9 +963,44 @@ pub extern "C" fn kernel_main(hart_id: usize, fdt_addr: usize) -> ! {
     println!("  [OK] Phase B complete — use 'make shell' to interact.");
     println!();
 
+    // ── Phase C: shell regression test ───────────────────────────────────────
+    // Seed a script that exercises .. navigation, touch, rm, mv, cp, then
+    // exits.  The shell drains this buffer before blocking for real input.
+    #[cfg(feature = "shell-test")]
+    {
+        console::seed(b"mkdir /t\n");
+        console::seed(b"mkdir /t/sub\n");
+        console::seed(b"write /t/sub/hello.txt ferrite\n");
+        console::seed(b"cd /t\n");
+        console::seed(b"pwd\n");              // expect: /t
+        console::seed(b"cd sub\n");
+        console::seed(b"pwd\n");              // expect: /t/sub
+        console::seed(b"cd ..\n");
+        console::seed(b"pwd\n");              // expect: /t
+        console::seed(b"touch newfile.txt\n");
+        console::seed(b"ls\n");               // expect: sub/ newfile.txt
+        console::seed(b"stat newfile.txt\n"); // expect: file, 0 bytes
+        console::seed(b"cp sub/hello.txt copy.txt\n");
+        console::seed(b"cat copy.txt\n");     // expect: ferrite
+        console::seed(b"mv copy.txt moved.txt\n");
+        console::seed(b"ls\n");               // expect: sub/ newfile.txt moved.txt
+        console::seed(b"rm newfile.txt\n");
+        console::seed(b"rm moved.txt\n");
+        console::seed(b"ls\n");               // expect: sub/
+        console::seed(b"exit\n");
+        println!("  [OK] Phase C: shell test commands seeded.");
+    }
+
     sched::enqueue(sh_tcb, 0);
     sched::start_scheduling();
     while !sched::is_done() { unsafe { core::arch::asm!("wfi", options(nomem, nostack)); } }
+
+    #[cfg(feature = "shell-test")]
+    {
+        println!("\n  [OK] Phase C: shell test complete — shutting down.");
+        // QEMU virt machine syscon-finisher poweroff (write 0x5555 to 0x100000).
+        unsafe { core::ptr::write_volatile(0x10_0000 as *mut u32, 0x5555); }
+    }
 
     loop { unsafe { core::arch::asm!("wfi", options(nomem, nostack)) } }
 }
